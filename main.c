@@ -1,12 +1,12 @@
 /**
  * @file main.c
  * @author iesimple (https://github.com/iesimple)
- * @brief 
+ * @brief
  * @version 0.1
  * @date 2022-06-15
- * 
+ *
  * @copyright Copyright (c) 2022
- * 
+ *
  */
 
 #include <sys/types.h>
@@ -21,6 +21,8 @@
 #include <netdb.h>
 #include <ctype.h>
 #include <termio.h>
+#include <regex.h>
+#include "base64.h"
 
 #define MAX_LEN_BUF 1024
 #define MAX_LEN_CMD 30
@@ -153,6 +155,47 @@ void get_sendbuf(char *sendbuf)
     sendbuf[i + 1] = '\n'; // 手动补一个'\n'到字符串最后，因为服务器要求的输入一定是"\r\n"结尾
 }
 
+void fileParse(FILE *fin)
+{
+    FILE *fp = fopen("../result/out.txt", "w");
+    regmatch_t pmatch;
+    regex_t reg1, reg2;
+    const char *pattern1 = "base64";
+    const char *pattern2 = "base64.*--";
+    int status;
+    regcomp(&reg1, pattern1, REG_NEWLINE);
+    regcomp(&reg2, pattern2, REG_NEWLINE);
+    int offset = 0;
+    char buf[1024];
+    char code[10000] = {0};
+    int found = 0;
+    do
+    {
+        fgets(buf, 1024, fin);
+        status = regexec(&reg1, buf, 1, &pmatch, 0);
+        if (status != REG_NOMATCH)
+            found = !found;
+        if (found)
+        {
+            strcat(code + strlen(code), buf);
+            code[strlen(code) - 2] = 0;
+        }
+    } while (!feof(fin));
+    status = regexec(&reg2, code, 1, &pmatch, 0);
+    if (status != REG_NOMATCH)
+    {
+        int end = pmatch.rm_eo;
+        while (code[--end] == '-')
+            ;
+        code[end + 1] = 0;
+        printf("content:\n%s\n", base64_decode(code + pmatch.rm_so + 6));
+        fputs(base64_decode(code + pmatch.rm_so + 6), fp);
+    }
+    fclose(fp);
+    regfree(&reg1);
+    regfree(&reg2);
+}
+
 /**
  * @brief 运行pop3客户端
  *
@@ -161,6 +204,8 @@ void get_sendbuf(char *sendbuf)
 void client_run(int sockfd)
 {
     char cmd[MAX_LEN_CMD];
+    char file_name[30] = "../emails/email-x.txt";
+    char file_id = '0';
     while (1)
     {
         fflush(stdin);
@@ -176,15 +221,32 @@ void client_run(int sockfd)
         write(sockfd, cmd, strlen(cmd));
         if (flag)
         {
+            file_name[16] = file_id;
+            file_id = file_id++;
+            if (file_id > 57)
+                file_id = '0';
+            FILE *fp = fopen(file_name, "w+");
             while ((n = read(sockfd, rcvbuf, MAX_LEN_BUF)) > 0)
             {
                 rcvbuf[n] = 0;
-                printf("%s", rcvbuf);
+                // printf("%s", rcvbuf);
+                if (!(strcmp(cmd, "LIST\r\n") == 0))
+                    fputs(rcvbuf, fp);
+                else
+                    printf("%s", rcvbuf);
                 // printf("----------%c----------%d---------%d\n", rcvbuf[n - 3], rcvbuf[n - 2], rcvbuf[n - 1]);
                 // 结束符为".\r\n"
                 if (rcvbuf[n - 1] == '\n' && rcvbuf[n - 2] == '\r' && rcvbuf[n - 3] == '.')
                     break;
             }
+
+            if (!(strcmp(cmd, "LIST\r\n") == 0))
+            {
+                printf("+OK\nwhole content has been written in %s\n", file_name);
+                fseek(fp, 0, SEEK_SET);
+                fileParse(fp);
+            }
+            fclose(fp);
         }
         else
         {
@@ -209,13 +271,10 @@ bool cmdParse(const char *cmd)
     char *token = NULL;
     char command[MAX_LEN_CMD] = {0};
     strcpy(command, cmd);
-
-    // 这里真的奇了怪了，两个换一下位置就不行了....
+    // printf("%s|\n", command);
+    token = strtok(command, " ");
     token = strtok(command, "\r");
-    if (token == NULL)
-        token = strtok(command, " ");
-
-    printf("command is %s|\n", token);
+    // printf("command is %s|\n", token);
     if (strcmp(token, "USER") && strcmp(token, "PASS") && strcmp(token, "STAT") && strcmp(token, "LIST") && strcmp(token, "RETR") && strcmp(token, "DELE") && strcmp(token, "RSET") && strcmp(token, "TOP") && strcmp(token, "QUIT"))
         return false;
 
@@ -224,11 +283,7 @@ bool cmdParse(const char *cmd)
     return true;
 }
 
-// 授权码
-// 163.com
-// VWSZLSENEWKXDCYY
-// qq.com
-// jjvfvmgxqhbibfbi
+
 
 int main()
 {
